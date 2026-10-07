@@ -1,14 +1,18 @@
 /* All season decompression and stat aggregation runs outside the UI thread. */
-const seasons=new Map();
+const seasons=new Map(),inFlight=new Map();
+let latestRequest=0;
 const averages={passing_cpoe:'attempts',target_share:'targets',air_yards_share:'targets',wopr:'targets',pacr:'attempts',racr:'targets'};
 async function getSeason(year,refresh){
  if(!refresh&&seasons.has(year))return seasons.get(year);
+ if(inFlight.has(year))return inFlight.get(year);
+ const loading=(async()=>{
  const response=await fetch(`data/${year}.json.gz`,{cache:refresh?'reload':'default'});
  if(!response.ok)throw Error(`Season ${year} is unavailable (${response.status})`);
  const stream=response.body.pipeThrough(new DecompressionStream('gzip'));
  const season=JSON.parse(await new Response(stream).text());
  if(seasons.size>=3)seasons.delete(seasons.keys().next().value);
  seasons.set(year,season);return season;
+ })();inFlight.set(year,loading);try{return await loading}finally{inFlight.delete(year)}
 }
 function aggregateSeason(source,q){
  const selected=source.slices.filter(s=>s.week>=+q.weekStart&&s.week<=+q.weekEnd&&(q.seasonType==='ALL'||s.type===q.seasonType));
@@ -35,4 +39,4 @@ function aggregateSeason(source,q){
  }
  const rows=[...groups.values()];return {rows,stats:[...new Set(rows.flatMap(r=>Object.keys(r.stats)))].sort(),season:source.season,weeks:[...new Set(source.slices.map(s=>s.week))].sort((a,b)=>a-b),plays:selected.reduce((n,s)=>n+s.plays,0),updated:source.updated,stale:Date.now()/1000-source.updated>21600,sources:source.sources};
 }
-self.onmessage=async event=>{const {id,query}=event.data;try{const source=await getSeason(+query.season,query.refresh==='1');self.postMessage({id,result:aggregateSeason(source,query)})}catch(error){self.postMessage({id,error:error.message})}};
+self.onmessage=async event=>{const {id,query}=event.data;latestRequest=id;try{const source=await getSeason(+query.season,query.refresh==='1');if(id!==latestRequest)return;self.postMessage({id,result:aggregateSeason(source,query)})}catch(error){self.postMessage({id,error:error.message})}};
