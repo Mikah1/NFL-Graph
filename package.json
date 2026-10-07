@@ -1,0 +1,11 @@
+{
+  "name": "fieldvision",
+  "version": "1.0.0",
+  "private": true,
+  "description": "NFL statistics graph explorer with automatic cached data imports",
+  "scripts": {
+    "dev": "python3 server.py",
+    "start": "python3 server.py",
+    "test": "python3 -m unittest discover -s tests && node --check static/app.js"
+  }
+}

@@ -1,0 +1,178 @@
+const $=id=>document.getElementById(id);
+const NS='http://www.w3.org/2000/svg';
+let state={mode:'teams',season:2026,x:'off_epa_per_play',y:'off_success_rate'},data=null,visible=[],requestId=0,controller=null;
+let saved=[];try{saved=JSON.parse(localStorage.getItem('fieldvision-graphs')||'[]')}catch{}
+const labels={off_epa_per_play:'Offensive EPA / play',def_epa_per_play:'Defensive EPA allowed / play',off_success_rate:'Offensive success rate',def_success_rate:'Defensive success rate allowed',off_pass_epa:'Passing EPA / play',off_rush_epa:'Rushing EPA / play',def_pass_epa:'Passing EPA allowed / play',def_rush_epa:'Rushing EPA allowed / play',off_yards_per_play:'Offensive yards / play',def_yards_per_play:'Yards allowed / play',off_yards_per_game:'Offensive yards / game',def_yards_per_game:'Yards allowed / game',off_pass_rate:'Pass play rate',off_explosive_rate:'Explosive play rate',def_explosive_rate:'Explosive plays allowed',off_plays:'Offensive plays',off_touchdowns:'Offensive touchdowns',off_turnovers:'Turnovers committed',def_turnovers:'Takeaways',passing_cpoe:'Completion % over expected',passing_epa_per_dropback:'Passing EPA / attempt',passing_epa:'Total passing EPA',passing_yards:'Passing yards',passing_tds:'Passing touchdowns',passing_interceptions:'Interceptions thrown',completion_pct:'Completion percentage',yards_per_attempt:'Passing yards / attempt',rushing_yards:'Rushing yards',rushing_tds:'Rushing touchdowns',rushing_epa:'Total rushing EPA',rushing_epa_per_carry:'Rushing EPA / carry',yards_per_carry:'Yards / carry',receiving_yards:'Receiving yards',receiving_tds:'Receiving touchdowns',receiving_epa:'Total receiving EPA',yards_per_reception:'Yards / reception',catch_pct:'Catch percentage',fantasy_points:'Fantasy points',fantasy_points_ppr:'Fantasy points (PPR)',targets:'Targets',carries:'Carries',attempts:'Pass attempts',receptions:'Receptions',games:'Games played',total_yards:'Total yards',touchdowns:'Total touchdowns',def_tackles_solo:'Solo tackles',def_sacks:'Defensive sacks',def_interceptions:'Defensive interceptions',fg_pct:'Field goal percentage',fg_made:'Field goals made'};
+const label=k=>labels[k]||k.replaceAll('_',' ').replace(/^./,c=>c.toUpperCase());
+const pct=k=>k.includes('rate')||k.includes('pct')||k==='completion_pct';
+const formatters={1:new Intl.NumberFormat('en-US',{maximumFractionDigits:1}),3:new Intl.NumberFormat('en-US',{maximumFractionDigits:3})};
+const fmt=(n,k)=>n==null?'—':formatters[k.includes('epa')||k.includes('per_')?3:1].format(n)+(pct(k)?'%':'');
+function el(tag,attrs={},text){const e=document.createElementNS(NS,tag);for(const [k,v]of Object.entries(attrs))e.setAttribute(k,v);if(text!==undefined)e.textContent=text;return e}
+let drawingRoot=null,drawVersion=0;
+function add(tag,attrs,text){const e=el(tag,attrs,text);(drawingRoot||$('chart')).append(e);return e}
+const responseCache=new Map();
+let renderFrame=0;
+function render(){++drawVersion;cancelAnimationFrame(renderFrame);renderFrame=requestAnimationFrame(renderNow)}
+function toast(message){$('toast').textContent=message;$('toast').style.display='block';clearTimeout(toast.timer);toast.timer=setTimeout(()=>$('toast').style.display='none',3300)}
+function modal(title,content){$('modalTitle').textContent=title;$('modalBody').replaceChildren();if(typeof content==='string')$('modalBody').innerHTML=content;else $('modalBody').append(content);$('modal').showModal()}
+$('closeModal').onclick=()=>$('modal').close();$('modal').onclick=e=>{if(e.target===$('modal'))$('modal').close()};
+function fillSelect(id,values,selected){const target=$(id);target.replaceChildren();for(const v of values){const o=document.createElement('option');o.value=typeof v==='string'?v:v.value;o.textContent=typeof v==='string'?label(v):v.name;target.append(o)}target.value=selected}
+let availableStats=[],activeAxis='x';
+const STAT_PAGE_SIZE=8;
+function statCategory(k){
+ if(state.mode==='teams'){
+  if(k==='games')return 'General';
+  const side=k.startsWith('def_')?'Defense':'Offense';
+  if(/epa|success|rate/.test(k))return side+' · Efficiency';
+  if(/yards/.test(k))return side+' · Yardage';
+  return side+' · Plays & scoring';
+ }
+ if(/^passing|^attempts$|^completions$|^completion_pct$|^yards_per_attempt$|^pacr$|^sack/.test(k))return 'Passing';
+ if(/^rushing|^carries$|^yards_per_carry$/.test(k))return 'Rushing';
+ if(/^receiving|^receptions$|^targets$|^catch_pct$|^yards_per_reception$|^target_share$|^air_yards_share$|^wopr$|^racr$/.test(k))return 'Receiving';
+ if(/^def_/.test(k))return 'Defense';
+ if(/^fg_|^gwfg_|^pat_/.test(k))return 'Kicking';
+ if(/^pt_/.test(k))return 'Punting';
+ if(/return|special_teams/.test(k))return 'Returns & special teams';
+ if(/^fantasy/.test(k))return 'Fantasy';
+ if(/fumble/.test(k))return 'Fumbles & recoveries';
+ return 'General & penalties';
+}
+function syncAxes(){for(const axis of ['x','y']){$(axis+'StatLabel').textContent=state[axis]?label(state[axis]):'Drop a stat here';$(axis+'Stat').value=state[axis];$(axis+'Stat').classList.toggle('active-axis',axis===activeAxis)}for(const b of document.querySelectorAll('.stat-chip'))b.classList.toggle('assigned',b.dataset.stat===state.x||b.dataset.stat===state.y)}
+function assignStat(axis,key){if(!availableStats.includes(key))return;state[axis]=key;syncAxes();render()}
+function enableStatDrag(chip,key){
+ let drag=null,suppressClick=false;
+ chip.onclick=()=>{if(!suppressClick)assignStat(activeAxis,key)};
+ chip.onpointerdown=e=>{if(e.button!==0)return;e.preventDefault();chip.focus({preventScroll:true});drag={x:e.clientX,y:e.clientY,moving:false};chip.setPointerCapture(e.pointerId)};
+ chip.onpointermove=e=>{if(!drag)return;if(!drag.moving&&Math.hypot(e.clientX-drag.x,e.clientY-drag.y)>6){drag.moving=true;document.querySelectorAll('.axis-drop').forEach(b=>b.classList.add('drag-ready'));chip.classList.add('dragging-stat')}if(drag.moving){e.preventDefault();const target=document.elementFromPoint(e.clientX,e.clientY)?.closest('.axis-drop');document.querySelectorAll('.axis-drop').forEach(b=>b.classList.toggle('drag-over',b===target))}};
+ const finish=e=>{if(!drag)return;const moving=drag.moving;drag=null;chip.classList.remove('dragging-stat');document.querySelectorAll('.axis-drop').forEach(b=>b.classList.remove('drag-ready','drag-over'));if(moving){suppressClick=true;setTimeout(()=>suppressClick=false,100);if(e.type==='pointerup'){const target=document.elementFromPoint(e.clientX,e.clientY)?.closest('.axis-drop');if(target)assignStat(target.dataset.axis,key)}}};
+ chip.onpointerup=finish;chip.onpointercancel=finish;
+}
+function buildStatGroups(){
+ const root=$('statGroups'),query=$('statSearch').value.trim().toLowerCase();
+ const previous=root.querySelector('details[open]')?.dataset.category;
+ root.replaceChildren();const groups=new Map();
+ for(const k of availableStats){if(query&&!(`${label(k)} ${k}`.toLowerCase().includes(query)))continue;const category=statCategory(k);if(!groups.has(category))groups.set(category,[]);groups.get(category).push(k)}
+ if(!groups.size){const p=document.createElement('p');p.className='stat-hint';p.textContent='No matching stats.';root.append(p);return}
+ for(const [category,keys] of groups){
+  const details=document.createElement('details');details.dataset.category=category;
+  const summary=document.createElement('summary'),title=document.createElement('span'),count=document.createElement('span');title.textContent=category;count.textContent=keys.length;count.className='stat-count';summary.append(title,count);
+  const body=document.createElement('div');body.className='stat-group-body';details.append(summary,body);root.append(details);let page=0;
+  function showPage(){body.replaceChildren();const start=page*STAT_PAGE_SIZE;
+   for(const key of keys.slice(start,start+STAT_PAGE_SIZE)){
+    const chip=document.createElement('button');chip.type='button';chip.className='stat-chip';chip.draggable=true;chip.dataset.stat=key;chip.classList.toggle('assigned',key===state.x||key===state.y);
+    const grip=document.createElement('span');grip.textContent='⠿';grip.className='stat-grip';const text=document.createElement('span');text.textContent=label(key);chip.append(grip,text);chip.title='Drag onto X or Y, or tap to assign to the selected axis';
+    enableStatDrag(chip,key);chip.ondragstart=e=>e.preventDefault();body.append(chip);
+   }
+   if(keys.length>STAT_PAGE_SIZE){const pager=document.createElement('div');pager.className='stat-pager';const prev=document.createElement('button'),next=document.createElement('button'),info=document.createElement('span');prev.textContent='‹';prev.setAttribute('aria-label','Previous stats');next.textContent='›';next.setAttribute('aria-label','Next stats');prev.disabled=page===0;next.disabled=start+STAT_PAGE_SIZE>=keys.length;info.textContent=`${start+1}–${Math.min(start+STAT_PAGE_SIZE,keys.length)} of ${keys.length}`;prev.onclick=()=>{page--;showPage()};next.onclick=()=>{page++;showPage()};pager.append(prev,info,next);body.append(pager)}
+  }
+  details.addEventListener('toggle',()=>{if(details.open){for(const other of root.querySelectorAll('details'))if(other!==details){other.open=false;other.querySelector('.stat-group-body').replaceChildren()}showPage()}else body.replaceChildren()});
+  if(category===previous||(query&&groups.size===1))details.open=true;
+ }
+}
+for(const axis of ['x','y']){const box=$(axis+'Stat');box.onclick=()=>{activeAxis=axis;syncAxes();$('statHint').textContent=`Tap a stat below to assign it to ${axis.toUpperCase()}, or drag it into either box.`};box.ondragover=e=>{e.preventDefault();e.dataTransfer.dropEffect='copy';box.classList.add('drag-over')};box.ondragleave=()=>box.classList.remove('drag-over');box.ondrop=e=>{e.preventDefault();document.querySelectorAll('.axis-drop').forEach(b=>b.classList.remove('drag-ready','drag-over'));assignStat(axis,e.dataTransfer.getData('text/plain'))}}
+$('statSearch').oninput=()=>{clearTimeout(buildStatGroups.timer);buildStatGroups.timer=setTimeout(buildStatGroups,120)};
+async function load(refresh=false){
+ ++drawVersion;cancelAnimationFrame(renderFrame);hideTooltip();const req=++requestId;if(controller)controller.abort();controller=new AbortController();$('loading').hidden=false;$('loading').innerHTML='<span class="spinner"></span><strong>Bringing the field into focus</strong><span>Importing and caching real NFL stats…</span>';
+ const low=+$('weekStart').value,high=+$('weekEnd').value;
+ if(low>high||low<1||high>22){$('loading').hidden=true;toast('Choose a valid week range from 1 to 22.');return}
+ $('weekLabel').textContent=`${low} – ${high}`;
+ try{
+ const query=new URLSearchParams({season:state.season,mode:state.mode,weekStart:low,weekEnd:high,seasonType:$('seasonType').value,refresh:refresh?'1':'0'});
+ const cacheKey=query.toString();let next=responseCache.get(cacheKey);
+ if(refresh){responseCache.clear();next=null}
+ if(!next||Date.now()-next.cachedAt>300000){next=await loadStatistics(query,controller.signal);if(req!==requestId)return;next.cachedAt=Date.now();if(responseCache.size>=12)responseCache.delete(responseCache.keys().next().value);responseCache.set(cacheKey,next)}
+ if(req!==requestId)return;data=next;
+ for(const r of data.rows)if(r.logo?.includes('static.www.nfl.com/image/upload/'))r.logo=r.logo.replace(/image\/upload\/[^/]+\//,'image/upload/f_auto,q_auto,w_80,h_80,c_fill/');
+ const preferred=state.mode==='teams'?['off_epa_per_play','off_success_rate','def_epa_per_play','def_success_rate','off_yards_per_game','off_pass_epa','off_rush_epa']:['passing_yards','passing_epa','passing_cpoe','yards_per_attempt','rushing_yards','receiving_yards','fantasy_points_ppr'];
+ const stats=[...new Set([...preferred.filter(k=>data.stats.includes(k)),...data.stats])];
+ if(!stats.includes(state.x)&&stats.length)state.x=stats[0];if(!stats.includes(state.y)&&stats.length)state.y=stats[1]||stats[0];
+ availableStats=stats;syncAxes();buildStatGroups();
+ const teams=[...new Map(data.rows.map(r=>[r.team,{value:r.team,name:r.team}])).values()].sort((a,b)=>a.name.localeCompare(b.name));
+ fillSelect('teamFilter',[{value:'',name:'All teams'},...teams],$('teamFilter').value);
+ fillSelect('position',[{value:'',name:'All positions'},...[...new Set(data.rows.map(r=>r.position))].sort().map(p=>({value:p,name:p}))],$('position').value);
+ $('headerSeason').textContent=state.season+' season';$('chartMeta').textContent=`${state.season} ${$('seasonType').selectedOptions[0].textContent.toUpperCase()} · WEEKS ${low}–${Math.min(high,Math.max(0,...data.weeks))||high}`;
+ const date=new Date(data.updated*1000).toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+ $('dataNote').textContent=`${data.plays.toLocaleString()} qualifying plays · ${data.weeks.length} available weeks · nflverse stats + ESPN team identity.`;
+ $('cacheNote').textContent=`${data.stale?'STALE CACHE ·':'CACHED ·'} ${date.toUpperCase()}`;
+ $('loading').hidden=true;render();
+ }catch(e){if(e.name==='AbortError')return;$('loading').replaceChildren();const h=document.createElement('strong');h.textContent='Data isn’t available right now';const p=document.createElement('span');p.textContent=e.message;p.style.cssText='max-width:420px;text-align:center;line-height:1.8;padding:0 20px';const b=document.createElement('button');b.className='error-button';b.textContent='Retry import';b.onclick=()=>load(true);$('loading').append(h,p,b);$('chartN').textContent='Import unavailable'}
+}
+function sample(r){const s=r.stats;if(state.x.startsWith('passing')||state.y.startsWith('passing')||['attempts','completion_pct','yards_per_attempt'].includes(state.x)||['attempts','completion_pct','yards_per_attempt'].includes(state.y))return s.attempts||0;if(state.x.startsWith('rushing')||state.y.startsWith('rushing')||state.x==='yards_per_carry'||state.y==='yards_per_carry')return s.carries||0;if(state.x.startsWith('receiving')||state.y.startsWith('receiving')||['targets','receptions','catch_pct'].includes(state.x)||['targets','receptions','catch_pct'].includes(state.y))return s.targets||0;return Math.max(s.attempts||0,s.carries||0,s.targets||0,s.def_tackles_solo||0,s.fg_att||0,s.pt_att||0)}
+function renderNow(){if(!data||!$('loading').hidden)return;hideTooltip();const conf=$('conference').value,team=$('teamFilter').value,pos=$('position').value,min=+$('minSample').value;
+ visible=data.rows.filter(r=>(!conf||r.conference===conf)&&(!team||r.team===team)&&(state.mode==='teams'||((!pos||r.position===pos)&&sample(r)>=min))&&Number.isFinite(r.stats[state.x])&&Number.isFinite(r.stats[state.y]));
+ $('filterCount').textContent=[conf,team,state.mode==='players'&&pos,state.mode==='players'&&min>0,+$('weekStart').value>1,+$('weekEnd').value<18,$('seasonType').value!=='REG'].filter(Boolean).length;
+ $('chartN').textContent=`${visible.length} ${state.mode} plotted`;
+ $('chartTitle').textContent=state.x==='off_epa_per_play'&&state.y==='off_success_rate'?'Offensive efficiency':`${label(state.y)} vs. ${label(state.x)}`;
+ $('chartSubtitle').textContent=state.mode==='teams'?'How the league stacks up, one play at a time.':'A closer look at the players moving the game.';
+ document.querySelector('.mean-legend').style.display=$('mean').checked?'flex':'none';
+ document.querySelector('.chart-footer>span').textContent=`⌁ Hover over a ${state.mode==='teams'?'team':'player'} to explore its stats`;
+ draw();if(!$('dataTable').hidden)renderTable();updateInsights();
+}
+function extent(vals){let min=Math.min(...vals),max=Math.max(...vals);let padding=(max-min)*.14||Math.max(Math.abs(min)*.15,.1);return [min-padding,max+padding]}
+function mean(arr){return arr.reduce((a,b)=>a+b,0)/arr.length}
+function median(arr){const a=[...arr].sort((x,y)=>x-y),m=Math.floor(a.length/2);return a.length%2?a[m]:(a[m-1]+a[m])/2}
+function draw(){const svg=$('chart'),version=++drawVersion;drawingRoot=document.createDocumentFragment();if(!visible.length){add('text',{x:470,y:235,'text-anchor':'middle',fill:'#7a8b6e','font-size':15},'No matching data. Try broadening your filters.');svg.replaceChildren(drawingRoot);drawingRoot=null;return}
+ const W=940,H=530,L=83,R=38,T=35,B=72;const cw=W-L-R,ch=H-T-B;
+ const xs=visible.map(r=>r.stats[state.x]),ys=visible.map(r=>r.stats[state.y]);const [xmin,xmax]=extent(xs),[ymin,ymax]=extent(ys);
+ const x=v=>L+(v-xmin)/(xmax-xmin)*cw,y=v=>H-B-(v-ymin)/(ymax-ymin)*ch;
+ add('rect',{x:L,y:T,width:cw,height:ch,fill:'#fdfefb'});
+ const mx=mean(xs),my=mean(ys);
+ if($('mean').checked){add('rect',{x:x(mx),y:T,width:W-R-x(mx),height:y(my)-T,fill:'#f0f5e9',opacity:.7});if(state.mode==='teams'&&state.x==='off_epa_per_play'&&state.y==='off_success_rate'){add('text',{x:W-R-13,y:T+19,'text-anchor':'end',class:'quadrant-label'},'EFFICIENT & CONSISTENT');add('text',{x:L+13,y:H-B-14,class:'quadrant-label'},'ROOM TO GROW')}}
+ for(let i=0;i<=6;i++){const vx=xmin+(xmax-xmin)*i/6,vy=ymin+(ymax-ymin)*i/6;add('line',{x1:x(vx),x2:x(vx),y1:T,y2:H-B,stroke:'#e8eddf','stroke-dasharray':'2 4'});add('line',{x1:L,x2:W-R,y1:y(vy),y2:y(vy),stroke:'#e8eddf','stroke-dasharray':'2 4'});add('text',{x:x(vx),y:H-B+22,'text-anchor':'middle',fill:'#96a088','font-size':10},fmt(vx,state.x));add('text',{x:L-14,y:y(vy)+3,'text-anchor':'end',fill:'#96a088','font-size':10},fmt(vy,state.y))}
+ function reference(vx,vy,color,dash,title){add('line',{x1:x(vx),x2:x(vx),y1:T,y2:H-B,stroke:color,'stroke-dasharray':dash,'stroke-width':1.2});add('line',{x1:L,x2:W-R,y1:y(vy),y2:y(vy),stroke:color,'stroke-dasharray':dash,'stroke-width':1.2});add('text',{x:x(vx)+7,y:T+15,fill:color,'font-size':9},`${title} ${fmt(vx,state.x)}`);add('text',{x:L+8,y:y(vy)-7,fill:color,'font-size':9},`${title} ${fmt(vy,state.y)}`)}
+ if($('mean').checked)reference(mx,my,'#8b9d77','5 5','Mean');if($('median').checked)reference(median(xs),median(ys),'#b89661','2 5','Median');
+ if($('trend').checked&&visible.length>1){const den=xs.reduce((a,v)=>a+(v-mx)**2,0);if(den){const slope=xs.reduce((a,v,i)=>a+(v-mx)*(ys[i]-my),0)/den;const pts=[];for(let i=0;i<=100;i++){const xx=xmin+(xmax-xmin)*i/100,yy=my+slope*(xx-mx);if(yy>=ymin&&yy<=ymax)pts.push(`${x(xx)},${y(yy)}`)}add('polyline',{points:pts.join(' '),fill:'none',stroke:'#bda271','stroke-width':1.5,'stroke-dasharray':'7 3'})}}
+ add('line',{x1:L,x2:W-R,y1:H-B,y2:H-B,stroke:'#d8e0ce'});add('line',{x1:L,x2:L,y1:T,y2:H-B,stroke:'#d8e0ce'});
+ add('text',{x:L+cw/2,y:H-23,'text-anchor':'middle',fill:'#6c7d60','font-size':12,'font-weight':500},label(state.x));add('text',{transform:`translate(23 ${T+ch/2}) rotate(-90)`,'text-anchor':'middle',fill:'#6c7d60','font-size':12,'font-weight':500},label(state.y));
+ const defs=add('defs');const sorted=[...visible].sort((a,b)=>b.stats[state.y]-a.stats[state.y]);const featured=new Set(sorted.slice(0,12).map(r=>r.id));
+ const points=[...visible];
+ svg.replaceChildren(drawingRoot);drawingRoot=null;
+ let pointIndex=0;
+ function batch(){if(version!==drawVersion)return;drawingRoot=document.createDocumentFragment();const end=Math.min(pointIndex+80,points.length);
+ for(;pointIndex<end;pointIndex++){const r=points[pointIndex];const px=x(r.stats[state.x]),py=y(r.stats[state.y]),image=$('images').checked&&r.logo&&(state.mode==='teams'||visible.length<=24||featured.has(r.id));const g=add('g',{class:'point',tabindex:0,'aria-label':`${r.name}: ${label(state.x)} ${fmt(r.stats[state.x],state.x)}, ${label(state.y)} ${fmt(r.stats[state.y],state.y)}`});
+ const c=el('circle',{cx:px,cy:py,r:image?14:5.5,fill:image?'#ffffff':(r.conference==='AFC'?'#527762':'#b79b64'),stroke:image?'#e5ebde':'white','stroke-width':1.4});g.append(c);
+ if(image&&state.mode==='players'){const clip=el('clipPath',{id:'clip-'+r.id});clip.append(el('circle',{cx:px,cy:py,r:14}));defs.append(clip)}if(image){const img=el('image',{href:r.logo,x:px-16,y:py-16,width:32,height:32,preserveAspectRatio:state.mode==='teams'?'xMidYMid meet':'xMidYMid slice'});if(state.mode==='players')img.setAttribute('clip-path',`url(#clip-${r.id})`);img.addEventListener('error',()=>{img.remove();g.append(el('text',{x:px,y:py+3,'text-anchor':'middle','font-size':8,fill:'#547045'},r.short?.slice(0,4)||r.team))});g.append(img)}
+ if($('labels').checked||(!image&&state.mode==='players'&&visible.length<150))g.append(el('text',{x:px,y:py+(image?26:17),'text-anchor':'middle',fill:'#687c59','font-size':8},state.mode==='teams'?r.team:r.short));
+ g.dataset.id=r.id;pointRows.set(r.id,r);
+ }
+ svg.append(drawingRoot);drawingRoot=null;if(pointIndex<points.length)requestAnimationFrame(batch);
+ }
+ pointRows.clear();batch();
+}
+const pointRows=new Map();let tooltipKey='',tooltipFrame=0,tooltipEvent=null,pinnedPoint=null;
+function hideTooltip(){cancelAnimationFrame(tooltipFrame);tooltipFrame=0;tooltipKey='';pinnedPoint=null;$('tooltip').style.display='none'}
+function tooltip(r,e){
+ const tip=$('tooltip'),key=r.id+state.x+state.y;
+ if(tooltipKey!==key){tooltipKey=key;tip.replaceChildren();const title=document.createElement('div');title.className='tooltip-name';if(r.logo){const img=document.createElement('img');img.src=r.logo;img.alt=r.name;img.decoding='async';title.append(img)}const name=document.createElement('span');name.textContent=r.name;title.append(name);tip.append(title);for(const k of [state.x,state.y,'games']){const row=document.createElement('div');row.className='tooltip-stat';const l=document.createElement('span');l.textContent=label(k);const n=document.createElement('b');n.textContent=fmt(r.stats[k],k);row.append(l,n);tip.append(row)}}
+ const area=$('chartArea').getBoundingClientRect();tip.style.transform=`translate(${Math.max(5,Math.min(e.clientX-area.left+18,area.width-225))}px,${Math.max(5,Math.min(e.clientY-area.top-90,area.height-145))}px)`;tip.style.display='block';
+}
+function queueTooltip(r,e){tooltipEvent={r,clientX:e.clientX,clientY:e.clientY};if(!tooltipFrame)tooltipFrame=requestAnimationFrame(()=>{tooltipFrame=0;const latest=tooltipEvent;tooltip(latest.r,latest)})}
+$('chart').onpointermove=e=>{if(pinnedPoint)return;const r=pointRows.get(e.target.closest('.point')?.dataset.id);if(r)queueTooltip(r,e);else hideTooltip()};
+$('chart').onpointerleave=()=>{if(!pinnedPoint)hideTooltip()};
+$('chart').onclick=e=>{const r=pointRows.get(e.target.closest('.point')?.dataset.id);if(!r){hideTooltip();return}if(pinnedPoint===r.id){hideTooltip();return}pinnedPoint=r.id;queueTooltip(r,e)};
+$('chart').onfocusin=e=>{const g=e.target.closest('.point'),r=pointRows.get(g?.dataset.id);if(r){const rect=g.getBoundingClientRect();queueTooltip(r,{clientX:rect.x+rect.width/2,clientY:rect.y})}};
+$('chart').onfocusout=()=>{if(!pinnedPoint)hideTooltip()};
+$('chart').onkeydown=e=>{if(e.key==='Escape')hideTooltip();if(e.key==='Enter'||e.key===' '){e.preventDefault();e.target.closest('.point')?.dispatchEvent(new MouseEvent('click',{bubbles:true}))}};
+function updateInsights(){const xs=visible.map(r=>r.stats[state.x]),ys=visible.map(r=>r.stats[state.y]);$('avgX').textContent=xs.length?fmt(mean(xs),state.x):'—';$('avgY').textContent=ys.length?fmt(mean(ys),state.y):'—';$('avgXLabel').textContent=label(state.x);$('avgYLabel').textContent=label(state.y);const lead=[...visible].sort((a,b)=>b.stats[state.y]-a.stats[state.y])[0];$('leader').replaceChildren();if(lead){if(lead.logo){const img=document.createElement('img');img.src=lead.logo;img.alt=lead.name;$('leader').append(img)}const span=document.createElement('span');span.textContent=state.mode==='teams'?lead.name.replace(/^[\w ]+ (?=[\w]+$)/,''):lead.name;$('leader').append(span);$('leaderDetail').textContent=`${fmt(lead.stats[state.y],state.y)} · highest ${label(state.y).toLowerCase()}`}else{$('leader').textContent='—';$('leaderDetail').textContent='No matching data'}}
+let tablePage=0;
+function renderTable(){tablePage=Math.min(tablePage,Math.max(0,Math.ceil(visible.length/100)-1));const wrap=$('dataTable');wrap.replaceChildren();const table=document.createElement('table');const head=document.createElement('tr');for(const text of [state.mode==='teams'?'Team':'Player',label(state.x),label(state.y),'Games']){const th=document.createElement('th');th.textContent=text;head.append(th)}const thead=document.createElement('thead');thead.append(head);table.append(thead);const body=document.createElement('tbody');for(const r of [...visible].sort((a,b)=>b.stats[state.y]-a.stats[state.y]).slice(tablePage*100,(tablePage+1)*100)){const tr=document.createElement('tr');for(const text of [r.name,fmt(r.stats[state.x],state.x),fmt(r.stats[state.y],state.y),r.stats.games]){const td=document.createElement('td');td.textContent=text;tr.append(td)}body.append(tr)}table.append(body);wrap.append(table);if(visible.length>100){const pager=document.createElement('div');pager.className='stat-pager';const prev=document.createElement('button'),next=document.createElement('button'),info=document.createElement('span');prev.textContent='‹';next.textContent='›';prev.disabled=tablePage===0;next.disabled=(tablePage+1)*100>=visible.length;info.textContent=`${tablePage*100+1}–${Math.min((tablePage+1)*100,visible.length)} of ${visible.length}`;prev.onclick=()=>{tablePage--;renderTable()};next.onclick=()=>{tablePage++;renderTable()};pager.append(prev,info,next);wrap.append(pager)}}
+function setMode(mode){state.mode=mode;$('statSearch').value='';document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('selected',b.dataset.mode===mode));document.querySelector('.player-filter').hidden=mode==='teams';state.x=mode==='teams'?'off_epa_per_play':'passing_yards';state.y=mode==='teams'?'off_success_rate':'passing_epa';$('position').value='';$('teamFilter').value='';load()}
+for(const b of document.querySelectorAll('[data-mode]'))b.onclick=()=>setMode(b.dataset.mode);
+for(const id of ['conference','teamFilter','position','mean','median','trend','images','labels'])$(id).onchange=render;
+$('minSample').oninput=()=>{$('sampleValue').textContent=$('minSample').value;render()};
+for(const id of ['weekStart','weekEnd','seasonType'])$(id).onchange=()=>load();
+$('swapBtn').onclick=()=>{[state.x,state.y]=[state.y,state.x];syncAxes();render()};
+$('resetBtn').onclick=()=>{$('conference').value='';$('seasonType').value='REG';$('weekStart').value=1;$('weekEnd').value=18;$('minSample').value=20;$('sampleValue').textContent=20;for(const id of ['mean','images'])$(id).checked=true;for(const id of ['median','trend','labels'])$(id).checked=false;setMode('teams')};
+$('refreshBtn').onclick=()=>load(true);
+$('tableBtn').onclick=()=>{const table=!$('dataTable').hidden;$('dataTable').hidden=table;if(!table)renderTable();$('chartArea').style.display=table?'':'none';$('tableBtn').style.background=table?'':'#edf4e6'};
+$('fullBtn').onclick=()=>{document.querySelector('.chart-card').classList.toggle('expanded')};document.addEventListener('keydown',e=>{if(e.key==='Escape')document.querySelector('.chart-card').classList.remove('expanded')});
+function download(content,type,name){const a=document.createElement('a');const url=URL.createObjectURL(new Blob([content],{type}));a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)}
+$('exportBtn').onclick=()=>{const body=document.createElement('div');body.innerHTML='<p>Export your current graph or the filtered data behind it.</p>';for(const [name,action] of [['Download graph (SVG)',async()=>{const clone=$('chart').cloneNode(true);clone.setAttribute('xmlns',NS);clone.insertBefore(el('rect',{width:940,height:530,fill:'#ffffff'}),clone.firstChild);const button=$('exportBtn');button.disabled=true;for(const image of clone.querySelectorAll('image')){try{const response=await fetch(image.getAttribute('href'));if(!response.ok)throw Error('Image unavailable');const blob=await response.blob();const encoded=await new Promise((resolve,reject)=>{const reader=new FileReader();reader.onload=()=>resolve(reader.result);reader.onerror=reject;reader.readAsDataURL(blob)});image.setAttribute('href',encoded)}catch{const group=image.parentNode,circle=group.querySelector('circle');if(circle){const name=group.getAttribute('aria-label')?.split(':')[0]||'';group.append(el('text',{x:circle.getAttribute('cx'),y:Number(circle.getAttribute('cy'))+4,'text-anchor':'middle','font-size':8,fill:'#547045'},name.split(' ').map(w=>w[0]).join('').slice(0,4)))}image.remove()}}for(const t of clone.querySelectorAll('text')){t.style.fontFamily='Arial,sans-serif';if(t.classList.contains('quadrant-label')){t.setAttribute('fill','#b7c0ad');t.setAttribute('font-size','9')}}button.disabled=false;download(new XMLSerializer().serializeToString(clone),'image/svg+xml',`fieldvision-${state.season}.svg`);$('modal').close();toast('Graph exported')}],['Download data (CSV)',()=>{const csv=v=>'"'+String(v??'').replaceAll('"','""')+'"';const keys=[...new Set(visible.flatMap(r=>Object.keys(r.stats)))];const rows=[['Name','Team','Position',...keys],...visible.map(r=>[r.name,r.team,r.position,...keys.map(k=>r.stats[k])])];download(rows.map(r=>r.map(csv).join(',')).join('\n'),'text/csv',`fieldvision-${state.season}-${state.mode}.csv`);$('modal').close();toast('Data exported')}]]){const b=document.createElement('button');b.className='outline-button';b.style.marginTop='12px';b.textContent=name;b.onclick=action;body.append(b)}modal('Export your view',body)};
+function snapshot(){return {...state,controls:Object.fromEntries(['conference','teamFilter','position','minSample','weekStart','weekEnd','seasonType'].map(id=>[id,$(id).value])),toggles:Object.fromEntries(['mean','median','trend','images','labels'].map(id=>[id,$(id).checked]))}}
+$('saveBtn').onclick=()=>{if(!data){toast('Wait for the stats to load first.');return}const body=document.createElement('div');const input=document.createElement('input');input.type='text';input.value=$('chartTitle').textContent;input.style.cssText='width:100%;padding:12px;border:1px solid #dce4d5;border-radius:5px';input.maxLength=100;const b=document.createElement('button');b.className='outline-button';b.style.marginTop='15px';b.textContent='Save graph';b.onclick=()=>{saved.push({name:input.value.trim()||'Untitled graph',...snapshot()});localStorage.setItem('fieldvision-graphs',JSON.stringify(saved));$('savedCount').textContent=saved.length;$('modal').close();toast('Graph saved in this browser')};body.append(input,b);modal('Save this graph',body)};
+$('savedCount').textContent=saved.length;
+$('savedBtn').onclick=()=>{const body=document.createElement('div');if(!saved.length)body.textContent='Your saved graphs will appear here. Build a view, then select Save graph.';saved.forEach((g,index)=>{const row=document.createElement('div');row.className='saved-row';const title=document.createElement('span');title.textContent=`${g.name} · ${g.season}`;const open=document.createElement('button');open.textContent='Open';open.onclick=async()=>{state={mode:g.mode,season:g.season,x:g.x,y:g.y};document.querySelectorAll('[data-mode]').forEach(b=>b.classList.toggle('selected',b.dataset.mode===g.mode));document.querySelector('.player-filter').hidden=g.mode==='teams';for(const [id,v]of Object.entries(g.controls))$(id).value=v;for(const [id,v]of Object.entries(g.toggles))$(id).checked=v;$('modal').close();await load();for(const [id,v]of Object.entries(g.controls))$(id).value=v;render()};const del=document.createElement('button');del.className='delete';del.textContent='×';del.title='Delete saved graph';del.onclick=()=>{saved.splice(index,1);localStorage.setItem('fieldvision-graphs',JSON.stringify(saved));$('savedCount').textContent=saved.length;$('modal').close();$('savedBtn').click()};row.append(title,open,del);body.append(row)});modal('Saved graphs',body)};
+$('sourcesBtn').onclick=()=>modal('The data behind the game','<div class="source-card"><strong>nflverse</strong>Player game statistics and play-by-play, imported from public releases. Offensive efficiency uses pass and run plays with a valid EPA; success means EPA above zero.<br><a href="https://github.com/nflverse/nflverse-data" target="_blank" rel="noopener">Explore the source ↗</a></div><div class="source-card"><strong>ESPN</strong>Team names, conference identity and official team logos.<br><a href="https://site.api.espn.com/apis/site/v2/sports/football/nfl/teams" target="_blank" rel="noopener">View the team feed ↗</a></div><p>Cached imports open immediately. Files older than 6 hours refresh in the background on the next request. Historical seasons download automatically when selected. On the published site, Refresh data reloads the latest published datasets. Imports are updated automatically by the deployment workflow. Provider updates can lag games; no unavailable season is filled with sample stats.</p><p>Player EPA per attempt uses pass attempts as its denominator. Defensive EPA and success rate measure the opposing offense; lower values indicate stronger defense. Logos and headshots are provided by their respective sources.</p>');
+let config=null;$('settingsBtn').onclick=()=>{const body=document.createElement('div');const p=document.createElement('p');p.textContent='Choose a season. We’ll import and cache its data automatically—no files or API keys needed.';const select=document.createElement('select');for(const year of config?.seasons||[2026,2025,2024]){const o=document.createElement('option');o.value=year;o.textContent=year+(year===config?.currentSeason?' · Current season':'');select.append(o)}select.value=state.season;const b=document.createElement('button');b.className='outline-button';b.style.marginTop='15px';b.textContent='Apply season';b.onclick=()=>{state.season=+select.value;$('modal').close();load()};body.append(p,select,b);modal('Season settings',body)};
+(async()=>{try{config=await loadConfiguration();state.season=config.currentSeason}catch{}load()})();
