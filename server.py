@@ -84,12 +84,19 @@ def aggregate(q):
     # Coalesce requests for the same slice, including team/player switches.
     key=tuple(q.get(k,[default])[0] for k,default in [('season',str(CURRENT)),('weekStart','1'),('weekEnd','22'),('seasonType','REG')])
     with locks['aggregate'+repr(key)]: result=_aggregate(q)
-    if q.get('includeLines',['1'])[0]=='0': return result
-    from line_stats import load_line_stats,merge_snapshot
-    try:
-        with locks['lines'+key[0]]: snapshot=load_line_stats(int(key[0]),q.get('refresh',['0'])[0]=='1')
-        return merge_snapshot(result,snapshot,q)
-    except Exception: return result
+    if q.get('includeLines',['1'])[0]!='0':
+        from line_stats import load_line_stats,merge_snapshot
+        try:
+            with locks['lines'+key[0]]: snapshot=load_line_stats(int(key[0]),q.get('refresh',['0'])[0]=='1')
+            result=merge_snapshot(result,snapshot,q)
+        except Exception: pass
+    if q.get('includeAdvanced',['1'])[0]!='0':
+        from advanced_stats import load_advanced,merge_advanced
+        try:
+            with locks['advanced'+key[0]]: extra=load_advanced(int(key[0]),q.get('refresh',['0'])[0]=='1')
+            result=merge_advanced(result,extra,q)
+        except Exception: pass
+    return result
 
 def _aggregate(q):
     season=int(q.get('season',[CURRENT])[0])

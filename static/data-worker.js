@@ -2,7 +2,7 @@
 const seasons=new Map(),inFlight=new Map();
 let latestRequest=0;
 const averages={passing_cpoe:'attempts',target_share:'targets',air_yards_share:'targets',wopr:'targets',pacr:'attempts',racr:'targets'};
-async function getSeason(year,refresh,lineAvailable){
+async function getSeason(year,refresh,lineAvailable,advancedAvailable){
  if(!refresh&&seasons.has(year))return seasons.get(year);
  if(inFlight.has(year))return inFlight.get(year);
  const loading=(async()=>{
@@ -11,6 +11,7 @@ async function getSeason(year,refresh,lineAvailable){
  const stream=response.body.pipeThrough(new DecompressionStream('gzip'));
  const season=JSON.parse(await new Response(stream).text());
  if(lineAvailable){try{const lines=await fetch(`data/lines-${year}.json`,{cache:refresh?'reload':'default'});if(lines.ok)season.lineSnapshot=await lines.json()}catch{}}
+ if(advancedAvailable){try{const response=await fetch(`data/advanced-${year}.json.gz`,{cache:refresh?'reload':'default'});if(response.ok)season.advanced=JSON.parse(await new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).text())}catch{}}
  if(seasons.size>=3)seasons.delete(seasons.keys().next().value);
  seasons.set(year,season);return season;
  })();inFlight.set(year,loading);try{return await loading}finally{inFlight.delete(year)}
@@ -42,6 +43,28 @@ function aggregateSeason(source,q){
  if(source.lineSnapshot){const snapshot=source.lineSnapshot;const compatible=+q.weekStart===1&&+q.weekEnd>=snapshot.throughWeek&&q.seasonType!=='POST';const {players,teams,...metadata}=snapshot;lineSnapshot={...metadata,compatible};
   for(const row of snapshot[q.mode]){for(const key of Object.keys(row.stats))stats.add(key);if(!compatible)continue;const existing=groups.get(row.id);if(existing)Object.assign(existing.stats,row.stats);else rows.push({...row,stats:{...row.stats}})}
  }
- return {rows,stats:[...stats].sort(),lineSnapshot,season:source.season,weeks:[...new Set(source.slices.map(s=>s.week))].sort((a,b)=>a-b),plays:selected.reduce((n,s)=>n+s.plays,0),updated:source.updated,stale:Date.now()/1000-source.updated>21600,sources:[...source.sources,...(source.lineSnapshot?[source.lineSnapshot.source]:[])]};
+ let advancedCoverage=null;if(source.advanced)advancedCoverage=mergeAdvanced(rows,stats,source.advanced,q);
+ return {rows,stats:[...stats].sort(),lineSnapshot,advancedCoverage,season:source.season,weeks:[...new Set(source.slices.map(s=>s.week))].sort((a,b)=>a-b),plays:selected.reduce((n,s)=>n+s.plays,0),updated:source.updated,stale:Date.now()/1000-source.updated>21600,sources:[...source.sources,...(source.lineSnapshot?[source.lineSnapshot.source]:[]),...(source.advanced?[source.advanced.source]:[])]};
 }
-self.onmessage=async event=>{const {id,query}=event.data;latestRequest=id;try{const source=await getSeason(+query.season,query.refresh==='1',query.lineAvailable);if(id!==latestRequest)return;self.postMessage({id,result:aggregateSeason(source,query)})}catch(error){self.postMessage({id,error:error.message})}};
+function passerRating(attempts,completions,yards,touchdowns,interceptions){if(!attempts)return null;return [(completions/attempts-.3)*5,(yards/attempts-3)*.25,touchdowns/attempts*20,2.375-interceptions/attempts*25].reduce((n,p)=>n+Math.max(0,Math.min(2.375,p)),0)/6*100}
+function mergeAdvanced(rows,keys,data,q){
+ const selected=data.slices.filter(s=>s.week>=+q.weekStart&&s.week<=+q.weekEnd&&(q.seasonType==='ALL'||s.type===q.seasonType)),groups=new Map();
+ for(const slice of data.slices)for(const row of slice[q.mode])for(const key of Object.keys(row.stats))keys.add(key);
+ for(const slice of selected)for(const row of slice[q.mode]){
+  if(!groups.has(row.id))groups.set(row.id,{...row,stats:{},counts:{},chartedGames:0});const g=groups.get(row.id);g.chartedGames+=row.chartedGames;
+  for(const [key,value]of Object.entries(row.stats))if(!(key in data.ratios)&&!['def_passer_rating_allowed','receiving_passer_rating_when_targeted'].includes(key)&&Number.isFinite(value))g.stats[key]=(g.stats[key]||0)+value;
+  for(const [key,value]of Object.entries(row.counts))g.counts[key]=(g.counts[key]||0)+value;
+ }
+ const index=new Map(rows.map(r=>[r.id,r]));
+ for(const g of groups.values()){
+  const s=g.stats,c=g.counts,value=k=>k.startsWith('@')?c[k.slice(1)]:s[k];
+  for(const [key,[num,den,scale]]of Object.entries(data.ratios))if(value(num)!==undefined)s[key]=value(den)?value(num)/value(den)*scale:null;
+  if(['def_targets','def_completions_allowed','def_yards_allowed','def_receiving_tds_allowed'].every(k=>k in s)&&'def_interceptions' in c)s.def_passer_rating_allowed=passerRating(s.def_targets,s.def_completions_allowed,s.def_yards_allowed,s.def_receiving_tds_allowed,c.def_interceptions);
+  if(['rec_targets','rec_catches','rec_yards','rec_tds'].every(k=>k in c)&&'receiving_interceptions_on_targets' in s)s.receiving_passer_rating_when_targeted=passerRating(c.rec_targets,c.rec_catches,c.rec_yards,c.rec_tds,s.receiving_interceptions_on_targets);
+  for(const key of Object.keys(s))if(s[key]!==null)s[key]=Math.round(s[key]*10000)/10000;
+  let row=index.get(g.id);if(!row){const {counts,chartedGames,...extra}=g;row={...extra,stats:{games:chartedGames}};rows.push(row)}
+  for(const [key,value]of Object.entries(s))if(!(key in row.stats))row.stats[key]=value;row.advancedSamples=c;
+ }
+ return {updated:data.updated,categories:data.coverage,selectedWeeks:[...new Set(selected.map(s=>s.week))].sort((a,b)=>a-b),source:data.source};
+}
+self.onmessage=async event=>{const {id,query}=event.data;latestRequest=id;try{const source=await getSeason(+query.season,query.refresh==='1',query.lineAvailable,query.advancedAvailable);if(id!==latestRequest)return;self.postMessage({id,result:aggregateSeason(source,query)})}catch(error){self.postMessage({id,error:error.message})}};
