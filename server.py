@@ -83,7 +83,13 @@ def load(season, refresh=False):
 def aggregate(q):
     # Coalesce requests for the same slice, including team/player switches.
     key=tuple(q.get(k,[default])[0] for k,default in [('season',str(CURRENT)),('weekStart','1'),('weekEnd','22'),('seasonType','REG')])
-    with locks['aggregate'+repr(key)]: return _aggregate(q)
+    with locks['aggregate'+repr(key)]: result=_aggregate(q)
+    if q.get('includeLines',['1'])[0]=='0': return result
+    from line_stats import load_line_stats,merge_snapshot
+    try:
+        with locks['lines'+key[0]]: snapshot=load_line_stats(int(key[0]),q.get('refresh',['0'])[0]=='1')
+        return merge_snapshot(result,snapshot,q)
+    except Exception: return result
 
 def _aggregate(q):
     season=int(q.get('season',[CURRENT])[0])

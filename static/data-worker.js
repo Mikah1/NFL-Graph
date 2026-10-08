@@ -2,7 +2,7 @@
 const seasons=new Map(),inFlight=new Map();
 let latestRequest=0;
 const averages={passing_cpoe:'attempts',target_share:'targets',air_yards_share:'targets',wopr:'targets',pacr:'attempts',racr:'targets'};
-async function getSeason(year,refresh){
+async function getSeason(year,refresh,lineAvailable){
  if(!refresh&&seasons.has(year))return seasons.get(year);
  if(inFlight.has(year))return inFlight.get(year);
  const loading=(async()=>{
@@ -10,6 +10,7 @@ async function getSeason(year,refresh){
  if(!response.ok)throw Error(`Season ${year} is unavailable (${response.status})`);
  const stream=response.body.pipeThrough(new DecompressionStream('gzip'));
  const season=JSON.parse(await new Response(stream).text());
+ if(lineAvailable){try{const lines=await fetch(`data/lines-${year}.json`,{cache:refresh?'reload':'default'});if(lines.ok)season.lineSnapshot=await lines.json()}catch{}}
  if(seasons.size>=3)seasons.delete(seasons.keys().next().value);
  seasons.set(year,season);return season;
  })();inFlight.set(year,loading);try{return await loading}finally{inFlight.delete(year)}
@@ -37,6 +38,10 @@ function aggregateSeason(source,q){
   }
   for(const [key,value]of Object.entries(s))if(value!==null)s[key]=Math.round(value*10000)/10000;
  }
- const rows=[...groups.values()];return {rows,stats:[...new Set(rows.flatMap(r=>Object.keys(r.stats)))].sort(),season:source.season,weeks:[...new Set(source.slices.map(s=>s.week))].sort((a,b)=>a-b),plays:selected.reduce((n,s)=>n+s.plays,0),updated:source.updated,stale:Date.now()/1000-source.updated>21600,sources:source.sources};
+ const rows=[...groups.values()];const stats=new Set(rows.flatMap(r=>Object.keys(r.stats)));let lineSnapshot=null;
+ if(source.lineSnapshot){const snapshot=source.lineSnapshot;const compatible=+q.weekStart===1&&+q.weekEnd>=snapshot.throughWeek&&q.seasonType!=='POST';const {players,teams,...metadata}=snapshot;lineSnapshot={...metadata,compatible};
+  for(const row of snapshot[q.mode]){for(const key of Object.keys(row.stats))stats.add(key);if(!compatible)continue;const existing=groups.get(row.id);if(existing)Object.assign(existing.stats,row.stats);else rows.push({...row,stats:{...row.stats}})}
+ }
+ return {rows,stats:[...stats].sort(),lineSnapshot,season:source.season,weeks:[...new Set(source.slices.map(s=>s.week))].sort((a,b)=>a-b),plays:selected.reduce((n,s)=>n+s.plays,0),updated:source.updated,stale:Date.now()/1000-source.updated>21600,sources:[...source.sources,...(source.lineSnapshot?[source.lineSnapshot.source]:[])]};
 }
-self.onmessage=async event=>{const {id,query}=event.data;latestRequest=id;try{const source=await getSeason(+query.season,query.refresh==='1');if(id!==latestRequest)return;self.postMessage({id,result:aggregateSeason(source,query)})}catch(error){self.postMessage({id,error:error.message})}};
+self.onmessage=async event=>{const {id,query}=event.data;latestRequest=id;try{const source=await getSeason(+query.season,query.refresh==='1',query.lineAvailable);if(id!==latestRequest)return;self.postMessage({id,result:aggregateSeason(source,query)})}catch(error){self.postMessage({id,error:error.message})}};

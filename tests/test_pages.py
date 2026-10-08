@@ -15,8 +15,12 @@ class PagesTests(unittest.TestCase):
             self.assertNotIn('href="/style.css"',html)
             self.assertIn('src="data-client.js"',html)
             self.assertTrue((root/'data-worker.js').exists())
-            expected={mode:server.aggregate({'season':[str(season)],'mode':[mode],'weekStart':['1'],'weekEnd':['18'],'seasonType':['REG']}) for mode in ['teams','players']}
+            self.assertIn(season,manifest['lineSeasons'])
+            expected={mode:server.aggregate({'season':[str(season)],'mode':[mode],'weekStart':['1'],'weekEnd':['18'],'seasonType':['REG'],'includeLines':['0']}) for mode in ['teams','players']}
             path=root/'expected.json';path.write_text(json.dumps(expected))
             subprocess.run(['node','tests/test_data_worker.cjs',str(root/f'data/{season}.json.gz'),str(path)],check=True)
+            expected={mode:server.aggregate({'season':[str(season)],'mode':[mode],'weekStart':['1'],'weekEnd':['18'],'seasonType':['REG']}) for mode in ['teams','players']}
+            path.write_text(json.dumps(expected))
+            subprocess.run(['node','tests/test_data_worker.cjs',str(root/f'data/{season}.json.gz'),str(path),str(root/f'data/lines-{season}.json')],check=True)
 
 if __name__=='__main__': unittest.main()

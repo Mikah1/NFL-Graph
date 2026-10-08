@@ -33,7 +33,7 @@ class AnalyticsTests(unittest.TestCase):
 
     def test_view_switch_reuses_computed_slice(self):
         from unittest.mock import patch
-        query={'season':['2026'],'weekStart':['1'],'weekEnd':['2']}
+        query={'season':['2026'],'weekStart':['1'],'weekEnd':['2'],'includeLines':['0']}
         server.aggregate({**query,'mode':['teams']})
         with patch.object(server,'number',side_effect=AssertionError('stats should not be recalculated')):
             players=server.aggregate({**query,'mode':['players']})

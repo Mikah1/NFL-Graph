@@ -34,3 +34,11 @@ Team efficiency includes run/pass plays with valid EPA and yards gained. Success
 Charts draw points in batches, reuse number formatters and tooltips, and limit featured headshots. Stats are grouped into searchable sections with eight-item pages. Data tables display 100 rows per page. Saved views stay in the browser where they were created.
 
 Checks: `python3 -m unittest discover -s tests` and `node --check static/app.js`.
+
+## Offensive and defensive line statistics
+
+ESPN Analytics publishes pass-block, run-block, pass-rush, and run-stop win rates using NFL Next Gen Stats. The app automatically imports the public ESPN article content feed, joins player identities to nflverse rosters, and caches separate line-play snapshots for 2023–2026. Wins, eligible plays, double-team percentages, and position-group rankings are included where published. Team leaderboards cover all 32 teams; player leaderboards contain qualifying leaders only, so missing players have unavailable metrics, never zeroes.
+
+[Current source leaderboard](https://www.espn.com/nfl/story/_/id/49742016/2026-win-rates-team-player-rankings-pass-rush-run-stop-blocking). Import endpoint: `https://cdn.espn.com/core/nfl/story/_/id/49742016?xhr=1`. Source IDs and historical articles are maintained in `line_stats.py`. ESPN changed its pass-game methodology in 2026.
+
+Choose the Offensive line or Defensive line stat section and assign metrics to either axis. Line-play minimum samples use eligible plays. These metrics are cumulative regular-season snapshots, not weekly splits: select weeks starting at 1 and ending at or beyond the source's reported week. Incompatible filters show a notice and omit line metrics. Player averages describe the plotted qualifying subset. GitHub Pages fetches each season's small supplemental file in its existing worker; line imports never inflate weekly play-by-play snapshots.
