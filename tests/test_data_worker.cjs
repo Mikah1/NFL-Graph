@@ -4,6 +4,7 @@ vm.runInContext(fs.readFileSync('static/data-worker.js','utf8'),context);
 context.source=JSON.parse(zlib.gunzipSync(fs.readFileSync(process.argv[2])));
 if(process.argv[4])context.source.lineSnapshot=JSON.parse(fs.readFileSync(process.argv[4]));
 if(process.argv[5])context.source.advanced=JSON.parse(zlib.gunzipSync(fs.readFileSync(process.argv[5])));
+if(process.argv[9])context.source.tracking=JSON.parse(zlib.gunzipSync(fs.readFileSync(process.argv[9])));
 const expected=JSON.parse(fs.readFileSync(process.argv[3]));
 for(const mode of ['teams','players']){
  context.query={mode,weekStart:+(process.argv[6]||1),weekEnd:+(process.argv[7]||18),seasonType:process.argv[8]||'REG'};

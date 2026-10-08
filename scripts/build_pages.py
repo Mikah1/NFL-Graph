@@ -5,6 +5,7 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]))
 import server
 from line_stats import ARTICLES,load_line_stats
 from advanced_stats import load_advanced
+from tracking_stats import load_tracking
 
 def build(output, seasons, refresh=False):
     output=Path(output);output.mkdir(parents=True,exist_ok=True)
@@ -12,7 +13,9 @@ def build(output, seasons, refresh=False):
         if source.is_file(): shutil.copy2(source,output/source.name)
     (output/'.nojekyll').touch()
     target=output/'data';target.mkdir(exist_ok=True)
-    available=[];failed=[];line_seasons=[];advanced_seasons=[]
+    available=[];failed=[];line_seasons=[];advanced_seasons=[];tracking_seasons=[]
+    # Supplemental joins and base snapshots must use the same refreshed NFL data.
+    if server.CURRENT in seasons: server.load(server.CURRENT,refresh)
     for season in seasons:
         if season not in ARTICLES: continue
         try:
@@ -38,15 +41,29 @@ def build(output, seasons, refresh=False):
             if path.exists(): advanced_seasons.append(season)
             print(f'Advanced stats {season} unavailable: {error}',file=sys.stderr,flush=True)
     for season in seasons:
+        path=target/f'tracking-{season}.json.gz'
+        if path.exists() and season!=server.CURRENT:
+            with gzip.open(path,'rt') as f: cached=json.load(f)
+            if cached.get('formatVersion')==1:
+                tracking_seasons.append(season);continue
+        try:
+            extra=load_tracking(season,refresh and season==server.CURRENT)
+            with gzip.open(path,'wt',compresslevel=6) as f: json.dump(extra,f,separators=(',',':'),allow_nan=False)
+            tracking_seasons.append(season)
+            print(f'Tracking / nflfastR {season}: {len(extra["slices"])} slices',flush=True)
+        except Exception as error:
+            if path.exists():tracking_seasons.append(season)
+            print(f'Tracking {season} unavailable: {error}',file=sys.stderr,flush=True)
+    for season in seasons:
         path=target/f'{season}.json.gz'
         if path.exists() and season!=server.CURRENT:
             available.append(season);continue
         try:
-            raw=server.load(season,refresh and season==server.CURRENT)
+            raw=server.load(season)
             slices=[]
             pairs=sorted({(int(r['week']),r['season_type']) for r in raw['players']})
             for week,typ in pairs:
-                query={'season':[str(season)],'weekStart':[str(week)],'weekEnd':[str(week)],'seasonType':[typ],'includeLines':['0'],'includeAdvanced':['0']}
+                query={'season':[str(season)],'weekStart':[str(week)],'weekEnd':[str(week)],'seasonType':[typ],'includeLines':['0'],'includeAdvanced':['0'],'includeTracking':['0']}
                 teams=server.aggregate({**query,'mode':['teams']})
                 players=server.aggregate({**query,'mode':['players']})
                 slices.append({'week':week,'type':typ,'teams':teams['rows'],'players':players['rows'],'plays':teams['plays']})
@@ -59,7 +76,7 @@ def build(output, seasons, refresh=False):
             else: failed.append(season)
             print(f'Season {season}: {e}',file=sys.stderr,flush=True)
     if server.CURRENT not in available: raise RuntimeError('Current-season data must be available before publishing')
-    manifest={'currentSeason':server.CURRENT,'seasons':sorted(available,reverse=True),'unavailableSeasons':failed,'builtAt':time.time(),'lineSeasons':line_seasons,'advancedSeasons':advanced_seasons}
+    manifest={'currentSeason':server.CURRENT,'seasons':sorted(available,reverse=True),'unavailableSeasons':failed,'builtAt':time.time(),'lineSeasons':line_seasons,'advancedSeasons':advanced_seasons,'trackingSeasons':tracking_seasons}
     (target/'config.json').write_text(json.dumps(manifest))
 
 if __name__=='__main__':

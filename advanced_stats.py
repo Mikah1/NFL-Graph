@@ -51,15 +51,17 @@ def passer_rating(attempts,completions,yards,touchdowns,interceptions):
     parts=[(completions/attempts-.3)*5,(yards/attempts-3)*.25,touchdowns/attempts*20,2.375-interceptions/attempts*25]
     return sum(max(0,min(2.375,p)) for p in parts)/6*100
 
-def derive(stats,counts):
+def derive(stats,counts,ratios=None):
     def value(key): return counts.get(key[1:]) if key.startswith('@') else stats.get(key)
-    for key,(numerator,denominator,scale) in RATIOS.items():
+    for key,(numerator,denominator,scale) in (RATIOS if ratios is None else ratios).items():
         n=value(numerator);d=value(denominator)
         if n is not None: stats[key]=n/d*scale if d else None
     if all(k in stats for k in ['def_targets','def_completions_allowed','def_yards_allowed','def_receiving_tds_allowed']) and 'def_interceptions' in counts:
         stats['def_passer_rating_allowed']=passer_rating(stats['def_targets'],stats['def_completions_allowed'],stats['def_yards_allowed'],stats['def_receiving_tds_allowed'],counts['def_interceptions'])
     if all(k in counts for k in ['rec_targets','rec_catches','rec_yards','rec_tds']) and 'receiving_interceptions_on_targets' in stats:
         stats['receiving_passer_rating_when_targeted']=passer_rating(counts['rec_targets'],counts['rec_catches'],counts['rec_yards'],counts['rec_tds'],stats['receiving_interceptions_on_targets'])
+    if 'ngs_passing_completed_air_yards' in stats and 'ngs_passing_intended_air_yards' in stats:
+        stats['ngs_passing_air_yards_differential']=stats['ngs_passing_completed_air_yards']-stats['ngs_passing_intended_air_yards']
     for key,value in stats.items():
         if value is not None: stats[key]=round(value,4)
     return stats
@@ -137,8 +139,9 @@ def load_advanced(season,refresh=False):
     memory[season]={'loaded':time.time(),'data':result}
     return result
 
-def merge_advanced(result,data,query):
+def merge_advanced(result,data,query,metadata_key="advancedCoverage"):
     if not data: return result
+    ratios=data.get("ratios",RATIOS);max_stats=set(data.get("maxStats",[]))
     low=int(query.get('weekStart',['1'])[0]);high=int(query.get('weekEnd',['22'])[0]);typ=query.get('seasonType',['REG'])[0];mode=query.get('mode',['teams'])[0]
     selected=[s for s in data['slices'] if low<=s['week']<=high and (typ=='ALL' or s['type']==typ)]
     grouped={}
@@ -147,19 +150,19 @@ def merge_advanced(result,data,query):
             group=grouped.setdefault(row['id'],{**row,'stats':{},'counts':{},'chartedGames':0})
             group['chartedGames']+=row['chartedGames']
             for key,value in row['stats'].items():
-                if key not in RATIOS and key not in ('def_passer_rating_allowed','receiving_passer_rating_when_targeted') and value is not None: group['stats'][key]=group['stats'].get(key,0)+value
+                if key not in ratios and key not in ('def_passer_rating_allowed','receiving_passer_rating_when_targeted','ngs_passing_air_yards_differential') and value is not None: group['stats'][key]=max(group['stats'].get(key,float('-inf')),value) if key in max_stats else group['stats'].get(key,0)+value
             for key,value in row['counts'].items(): group['counts'][key]=group['counts'].get(key,0)+value
     result={**result,'rows':[{**r,'stats':dict(r['stats'])} for r in result['rows']], 'sources':[*result['sources'],data['source']]}
     indexed={r['id']:r for r in result['rows']}
     keys={k for s in data['slices'] for r in s[mode] for k in r['stats']}
     for pid,row in grouped.items():
-        derive(row['stats'],row['counts'])
+        derive(row['stats'],row['counts'],ratios)
         target=indexed.get(pid)
         if target is None:
             target={k:v for k,v in row.items() if k not in ('counts','chartedGames')};target['stats']['games']=row['chartedGames'];result['rows'].append(target)
         # Existing metrics always take precedence; do not expose renamed copies.
         target['stats'].update({k:v for k,v in row['stats'].items() if k not in target['stats']})
-        target['advancedSamples']=row['counts']
+        target['advancedSamples']={**target.get('advancedSamples',{}),**row['counts']}
     result['stats']=sorted(set(result['stats'])|keys)
-    result['advancedCoverage']={'updated':data['updated'],'categories':data['coverage'],'selectedWeeks':sorted({s['week'] for s in selected}),'source':data['source']}
+    result[metadata_key]={'updated':data['updated'],'categories':data['coverage'],'selectedWeeks':sorted({s['week'] for s in selected}),'source':data['source']}
     return result

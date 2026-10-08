@@ -71,7 +71,8 @@ def load(season, refresh=False):
             players=list(csv.DictReader(f))
         with gzip.open(pbp_path,'rt') as f:
             # Retain only required columns, so multiple seasons stay reasonably small.
-            fields='game_id week season_type posteam defteam play_type qb_dropback rush_attempt pass_attempt epa yards_gained success touchdown interception fumble_lost down yardline_100'.split()
+            from tracking_stats import PBP_FIELDS
+            fields='game_id week season_type posteam defteam play_type qb_dropback rush_attempt pass_attempt epa yards_gained success touchdown interception fumble_lost down yardline_100'.split()+PBP_FIELDS
             plays=[{k:r.get(k,'') for k in fields} for r in csv.DictReader(f)]
         data={'teams':teams,'players':players,'plays':plays,'loaded':time.time(),'updated':max(player_path.stat().st_mtime,pbp_path.stat().st_mtime),'stale':time.time()-min(player_path.stat().st_mtime,pbp_path.stat().st_mtime)>21600}
         if key not in memory and len(memory)>=3:
@@ -95,6 +96,13 @@ def aggregate(q):
         try:
             with locks['advanced'+key[0]]: extra=load_advanced(int(key[0]),q.get('refresh',['0'])[0]=='1')
             result=merge_advanced(result,extra,q)
+        except Exception: pass
+    if q.get('includeTracking',['1'])[0]!='0':
+        from tracking_stats import load_tracking
+        from advanced_stats import merge_advanced
+        try:
+            with locks['tracking'+key[0]]: extra=load_tracking(int(key[0]),q.get('refresh',['0'])[0]=='1')
+            result=merge_advanced(result,extra,q,'trackingCoverage')
         except Exception: pass
     return result
 
