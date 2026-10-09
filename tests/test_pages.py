@@ -11,6 +11,10 @@ class PagesTests(unittest.TestCase):
             root=Path(folder)
             manifest=json.loads((root/'data/config.json').read_text())
             self.assertIn(season,manifest['seasons'])
+            self.assertIn(season,manifest['collegeSeasons'])
+            expected_college={mode:server.aggregate({'league':['college'],'season':[str(season)],'mode':[mode],'weekStart':['1'],'weekEnd':['18'],'seasonType':['REG']}) for mode in ['teams','players']}
+            college_path=root/'college-expected.json';college_path.write_text(json.dumps(expected_college))
+            subprocess.run(['node','tests/test_data_worker.cjs',str(root/f'data/college-{season}.json.gz'),str(college_path)],check=True)
             html=(root/'index.html').read_text()
             self.assertNotIn('href="/style.css"',html)
             self.assertIn('src="data-client.js"',html)

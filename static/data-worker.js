@@ -2,11 +2,12 @@
 const seasons=new Map(),inFlight=new Map();
 let latestRequest=0;
 const averages={passing_cpoe:'attempts',target_share:'targets',air_yards_share:'targets',wopr:'targets',pacr:'attempts',racr:'targets'};
-async function getSeason(year,refresh,lineAvailable,advancedAvailable,trackingAvailable){
- if(!refresh&&seasons.has(year))return seasons.get(year);
- if(inFlight.has(year))return inFlight.get(year);
+async function getSeason(year,refresh,lineAvailable,advancedAvailable,trackingAvailable,league='nfl'){
+ const cacheKey=league+year;
+ if(!refresh&&seasons.has(cacheKey))return seasons.get(cacheKey);
+ if(inFlight.has(cacheKey))return inFlight.get(cacheKey);
  const loading=(async()=>{
- const response=await fetch(`data/${year}.json.gz`,{cache:refresh?'reload':'default'});
+ const response=await fetch(`data/${league==='college'?'college-':''}${year}.json.gz`,{cache:refresh?'reload':'default'});
  if(!response.ok)throw Error(`Season ${year} is unavailable (${response.status})`);
  const stream=response.body.pipeThrough(new DecompressionStream('gzip'));
  const season=JSON.parse(await new Response(stream).text());
@@ -14,8 +15,8 @@ async function getSeason(year,refresh,lineAvailable,advancedAvailable,trackingAv
  if(advancedAvailable){try{const response=await fetch(`data/advanced-${year}.json.gz`,{cache:refresh?'reload':'default'});if(response.ok)season.advanced=JSON.parse(await new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).text())}catch{}}
  if(trackingAvailable){try{const response=await fetch(`data/tracking-${year}.json.gz`,{cache:refresh?'reload':'default'});if(response.ok)season.tracking=JSON.parse(await new Response(response.body.pipeThrough(new DecompressionStream('gzip'))).text())}catch{}}
  if(seasons.size>=3)seasons.delete(seasons.keys().next().value);
- seasons.set(year,season);return season;
- })();inFlight.set(year,loading);try{return await loading}finally{inFlight.delete(year)}
+ seasons.set(cacheKey,season);return season;
+ })();inFlight.set(cacheKey,loading);try{return await loading}finally{inFlight.delete(cacheKey)}
 }
 function aggregateSeason(source,q){
  const selected=source.slices.filter(s=>s.week>=+q.weekStart&&s.week<=+q.weekEnd&&(q.seasonType==='ALL'||s.type===q.seasonType));
@@ -70,4 +71,4 @@ function mergeAdvanced(rows,keys,data,q){
  }
  return {updated:data.updated,categories:data.coverage,selectedWeeks:[...new Set(selected.map(s=>s.week))].sort((a,b)=>a-b),source:data.source};
 }
-self.onmessage=async event=>{const {id,query}=event.data;latestRequest=id;try{const source=await getSeason(+query.season,query.refresh==='1',query.lineAvailable,query.advancedAvailable,query.trackingAvailable);if(id!==latestRequest)return;self.postMessage({id,result:aggregateSeason(source,query)})}catch(error){self.postMessage({id,error:error.message})}};
+self.onmessage=async event=>{const {id,query}=event.data;latestRequest=id;try{const source=await getSeason(+query.season,query.refresh==='1',query.lineAvailable,query.advancedAvailable,query.trackingAvailable,query.league);if(id!==latestRequest)return;self.postMessage({id,result:aggregateSeason(source,query)})}catch(error){self.postMessage({id,error:error.message})}};

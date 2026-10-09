@@ -1,0 +1,5 @@
+const fs=require('node:fs'),vm=require('node:vm'),zlib=require('node:zlib'),assert=require('node:assert/strict');
+const requests=[];
+const context=vm.createContext({self:{},Response,DecompressionStream,fetch:async url=>{requests.push(url);return new Response(zlib.gzipSync(JSON.stringify({season:2026,slices:[],sources:[],updated:0,league:url.includes('college-')?'college':'nfl'})))}});
+vm.runInContext(fs.readFileSync('static/data-worker.js','utf8'),context);
+(async()=>{const nfl=await vm.runInContext("getSeason(2026,false,false,false,false,'nfl')",context);const college=await vm.runInContext("getSeason(2026,false,false,false,false,'college')",context);assert.equal(nfl.league,'nfl');assert.equal(college.league,'college');await vm.runInContext("getSeason(2026,false,false,false,false,'college')",context);assert.deepEqual(requests,['data/2026.json.gz','data/college-2026.json.gz']);console.log('League caches and source requests remain separate.')})().catch(e=>{console.error(e);process.exitCode=1});

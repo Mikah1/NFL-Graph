@@ -76,7 +76,22 @@ def build(output, seasons, refresh=False):
             else: failed.append(season)
             print(f'Season {season}: {e}',file=sys.stderr,flush=True)
     if server.CURRENT not in available: raise RuntimeError('Current-season data must be available before publishing')
-    manifest={'currentSeason':server.CURRENT,'seasons':sorted(available,reverse=True),'unavailableSeasons':failed,'builtAt':time.time(),'lineSeasons':line_seasons,'advancedSeasons':advanced_seasons,'trackingSeasons':tracking_seasons}
+    from college_stats import load_college
+    college_seasons=[]
+    for year in seasons:
+        if year<2004:continue
+        path=target/f'college-{year}.json.gz'
+        try:
+            if not path.exists() or year==server.CURRENT:
+                payload=load_college(year,refresh and year==server.CURRENT)
+                with gzip.open(path,'wt',compresslevel=6) as f:json.dump(payload,f,separators=(',',':'),allow_nan=False)
+            college_seasons.append(year)
+            print(f'College {year}: {path.stat().st_size:,} bytes',flush=True)
+        except Exception as error:
+            if path.exists():college_seasons.append(year)
+            print(f'College {year} unavailable: {error}',file=sys.stderr,flush=True)
+    if server.CURRENT not in college_seasons:raise RuntimeError('Current college season unavailable')
+    manifest={'collegeSeasons':college_seasons,'currentSeason':server.CURRENT,'seasons':sorted(available,reverse=True),'unavailableSeasons':failed,'builtAt':time.time(),'lineSeasons':line_seasons,'advancedSeasons':advanced_seasons,'trackingSeasons':tracking_seasons}
     (target/'config.json').write_text(json.dumps(manifest))
 
 if __name__=='__main__':

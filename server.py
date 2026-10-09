@@ -82,6 +82,9 @@ def load(season, refresh=False):
         return data
 
 def aggregate(q):
+    if q.get('league',['nfl'])[0]=='college':
+        from college_stats import aggregate_college
+        return aggregate_college(q)
     # Coalesce requests for the same slice, including team/player switches.
     key=tuple(q.get(k,[default])[0] for k,default in [('season',str(CURRENT)),('weekStart','1'),('weekEnd','22'),('seasonType','REG')])
     with locks['aggregate'+repr(key)]: result=_aggregate(q)
@@ -188,7 +191,7 @@ class Handler(SimpleHTTPRequestHandler):
     def __init__(self,*args,**kwargs): super().__init__(*args,directory=str(ROOT/'static'),**kwargs)
     def do_GET(self):
         p=urlparse(self.path)
-        if p.path=='/api/config': return self.send_json({'currentSeason':CURRENT,'seasons':list(range(CURRENT,1998,-1))})
+        if p.path=='/api/config': return self.send_json({'currentSeason':CURRENT,'seasons':list(range(CURRENT,1998,-1)),'collegeSeasons':list(range(CURRENT,2003,-1))})
         if p.path=='/api/data':
             try: self.send_json(aggregate(parse_qs(p.query)))
             except Exception as e: self.send_json({'error':f'This season could not be loaded: {e}. Try another season or retry the import.'},502)
